@@ -3,6 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pi
 import { supabase } from "../lib/supabase";
 import ProjectDetail from "./ProjectDetail";
 import WorkersPage from "./WorkersPage";
+import SettingsPage from "./SettingsPage";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const GEMINI_KEY = "AIzaSyBGHRBPMN8vokpEfQYpO7ICNngZPKd5xwU";
@@ -33,6 +34,7 @@ const NAV_ITEMS = [
   { id: "reports", label: "דוחות PDF", icon: "▤" },
   { id: "security", label: "אבטחה", icon: "◬" },
   { id: "workers", label: "עובדים", icon: "👷" },
+  { id: "settings", label: "הגדרות", icon: "⚙️" },
 ];
 
 const fmt = (n) => !n ? "₪0" : n >= 1000000 ? `₪${(n / 1000000).toFixed(1)}M` : `₪${(n / 1000).toFixed(0)}K`;
@@ -286,6 +288,7 @@ function QuantitiesPage({ projects }) {
 function ScannerPage({ projects }) {
   const [file, setFile] = useState(null);
   const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState(null);
   const [result, setResult] = useState(null);
   const [saved, setSaved] = useState(false);
   const fileRef = useRef();
@@ -295,6 +298,7 @@ function ScannerPage({ projects }) {
     setScanning(true);
     setResult(null);
     setSaved(false);
+    setScanError(null);
     try {
       const base64 = await new Promise((res, rej) => {
         const r = new FileReader();
@@ -303,20 +307,39 @@ function ScannerPage({ projects }) {
         r.readAsDataURL(file);
       });
       const isImage = file.type.startsWith("image/");
+      const mimeType = isImage ? file.type : "application/pdf";
       const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: 'Extract from this invoice: supplier name and total amount. Reply ONLY in JSON: {"supplier": "...", "amount": 12345, "date": "...", "items": [{"desc":"...","amount":0}]}' }, { inline_data: { mime_type: isImage ? file.type : "application/pdf", data: base64 } }] }]
+          contents: [{
+            parts: [
+              { text: `אתה מומחה לניתוח חשבוניות בעברית ובאנגלית. נתח את החשבונית הזו ביסודיות.
+חלץ את כל הפרטים הבאים:
+- שם הספק / חברה מוציאת החשבונית
+- מספר חשבונית
+- תאריך החשבונית
+- סכום כולל לתשלום (המספר האחרון והגדול ביותר בדרך כלל)
+- רשימת פריטים / שירותים
+
+חשוב מאוד: הסכום חייב להיות המספר המדויק שמופיע בחשבונית. אל תעגל ואל תמציא.
+
+החזר JSON בלבד ללא הסבר:
+{"supplier":"שם הספק המדויק","invoice_number":"מספר חשבונית","amount":0,"date":"תאריך","items":[{"desc":"תיאור פריט","amount":0}],"confidence":0.95}` },
+              { inline_data: { mime_type: mimeType, data: base64 } }
+            ]
+          }]
         })
       });
       const data = await resp.json();
+      if (data.error) throw new Error(data.error.message);
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
       const clean = text.replace(/```json|```/g, "").trim();
-      setResult(JSON.parse(clean));
+      const parsed = JSON.parse(clean);
+      if (!parsed.amount || parsed.amount === 0) throw new Error("לא זוהה סכום");
+      setResult(parsed);
     } catch (e) {
-      // Demo mode fallback
-      setResult({ supplier: "רשת מגורים - בטון בע״מ", amount: 48500, date: new Date().toLocaleDateString("he-IL"), items: [{ desc: "בטון B30 - 25 מ״ק", amount: 48500 }] });
+      setScanError("שגיאה: " + (e.message || "לא ניתן לנתח את המסמך. נסה תמונה ברורה יותר."));
     }
     setScanning(false);
   };
@@ -353,6 +376,7 @@ function ScannerPage({ projects }) {
           <h2 style={{ fontSize: "1rem", fontWeight: 600, color: "#E8E0D0", marginBottom: "1rem" }}>תוצאות סריקה</h2>
           {!result && !scanning && <div style={{ color: "#8B9DB5", textAlign: "center", padding: "3rem 0" }}>העלה מסמך וסרוק לקבלת תוצאות</div>}
           {scanning && <div style={{ textAlign: "center", padding: "3rem 0" }}><div style={{ fontSize: "2rem", marginBottom: "1rem" }}>🔍</div><div style={{ color: "#C9A84C" }}>Gemini מנתח את המסמך...</div></div>}
+          {scanError && <div style={{ background: "rgba(224,92,92,0.1)", border: "1px solid rgba(224,92,92,0.3)", borderRadius: "0.8rem", padding: "1rem", color: "#E05C5C", fontSize: "0.85rem", textAlign: "center" }}>{scanError}</div>}
           {result && !scanning && (
             <div>
               <div style={{ display: "grid", gap: "0.8rem", marginBottom: "1rem" }}>
@@ -822,6 +846,7 @@ export default function Dashboard() {
         {activeNav === "reports" && <ReportsPage projects={projects} />}
         {activeNav === "security" && <SecurityPage />}
         {activeNav === "workers" && <WorkersPage projects={projects} />}
+        {activeNav === "settings" && <SettingsPage projects={projects} />}
       </main>
 
       {modal && <ProjectModal project={modal === "add" ? null : modal} onSave={handleSave} onClose={() => setModal(null)} />}
