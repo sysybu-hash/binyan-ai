@@ -308,7 +308,7 @@ function ScannerPage({ projects }) {
       });
       const isImage = file.type.startsWith("image/");
       const mimeType = isImage ? file.type : "application/pdf";
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`, {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-fgemini-2.5-flash-preview-05-20lash:generateContent?key=${GEMINI_KEY}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -497,7 +497,7 @@ function Model3DPage() {
     setAnalyzing(true);
     try {
       const base64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(file); });
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`, {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-fgemini-2.5-flash-preview-05-20lash:generateContent?key=${GEMINI_KEY}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contents: [{ parts: [{ text: 'Analyze this blueprint. Extract dimensions and materials. Reply ONLY in JSON: {"width":10,"length":8,"height":3,"rooms":3,"materials":[{"name":"בטון","quantity":45,"unit":"מ״ק"},{"name":"בלוקים","quantity":2500,"unit":"יח׳"}]}' }, { inline_data: { mime_type: file.type, data: base64 } }] }] })
       });
