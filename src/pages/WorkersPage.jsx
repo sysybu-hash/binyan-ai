@@ -179,34 +179,77 @@ function MakanatImport({ onImport, onClose }) {
   const fileRef = useRef();
 
   const parseCSV = (text) => {
-    const lines = text.split("\n").filter(l => l.trim());
-    const headers = lines[0].split(",").map(h => h.trim().replace(/"/g, ""));
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return [];
+    const sep = lines[0].includes("\t") ? "\t" : ",";
+    const headers = lines[0].split(sep).map(h => h.trim().replace(/"/g, ""));
     return lines.slice(1).map(line => {
-      const vals = line.split(",").map(v => v.trim().replace(/"/g, ""));
+      const vals = line.split(sep).map(v => v.trim().replace(/"/g, ""));
       return Object.fromEntries(headers.map((h, i) => [h, vals[i] || ""]));
+    }).filter(row => Object.values(row).some(v => v));
+  };
+
+  const parseExcel = (buffer) => {
+    return new Promise((resolve) => {
+      if (window.XLSX) {
+        const wb = window.XLSX.read(buffer, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        resolve(window.XLSX.utils.sheet_to_json(ws, { defval: "" }));
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+      script.onload = () => {
+        const wb = window.XLSX.read(buffer, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        resolve(window.XLSX.utils.sheet_to_json(ws, { defval: "" }));
+      };
+      script.onerror = () => resolve([]);
+      document.head.appendChild(script);
     });
   };
 
-  const handleFile = (file) => {
-    const r = new FileReader();
-    r.onload = e => {
-      const data = parseCSV(e.target.result);
+  const handleFile = async (file) => {
+    const isExcel = file.name.endsWith(".xlsx") || file.name.endsWith(".xls");
+    if (isExcel) {
+      const buffer = await file.arrayBuffer();
+      const arr = new Uint8Array(buffer);
+      const data = await parseExcel(arr);
       setCsvData(data);
       setStep(2);
-    };
-    r.readAsText(file, "UTF-8");
+    } else {
+      const r = new FileReader();
+      r.onload = e => {
+        const data = parseCSV(e.target.result);
+        setCsvData(data);
+        setStep(2);
+      };
+      r.readAsText(file, "UTF-8");
+    }
   };
 
-  const mapWorker = (row) => ({
-    name: row["שם"] || row["name"] || row["Name"] || row["שם עובד"] || Object.values(row)[0] || "לא ידוע",
-    phone: row["טלפון"] || row["phone"] || row["נייד"] || "",
-    role: row["תפקיד"] || row["role"] || row["מקצוע"] || "",
-    company: row["חברה"] || row["company"] || row["קבלן"] || "",
-    id_number: row["ת.ז"] || row["תז"] || row["id"] || row["מספר עובד"] || "",
-    daily_rate: Number(row["שכר יומי"] || row["שכר"] || row["daily_rate"] || 0),
-    makanot_id: row["מזהה"] || row["id_makanat"] || "",
-    status: "פעיל",
-  });
+  const findVal = (row, keys) => {
+    for (const k of keys) {
+      const found = Object.entries(row).find(([key]) => key.includes(k));
+      if (found && found[1]) return String(found[1]).trim();
+    }
+    return "";
+  };
+
+  const mapWorker = (row) => {
+    const name = findVal(row, ["שם", "name", "Name", "EMPLOYEE", "עובד"]) || Object.values(row).find(v => v && String(v).trim()) || "לא ידוע";
+    return {
+      name,
+      phone: findVal(row, ["טלפון", "phone", "נייד", "mobile", "cel", "Phone"]),
+      role: findVal(row, ["תפקיד", "role", "מקצוע", "job", "Job", "position", "Position"]),
+      company: findVal(row, ["חברה", "company", "קבלן", "employer", "Employer"]),
+      id_number: findVal(row, ["ת.ז", "תז", "id_number", "ID", "מספר", "passport"]),
+      daily_rate: Number(findVal(row, ["שכר יומי", "שכר", "daily_rate", "rate", "salary"]).replace(/[^0-9.]/g, "") || 0),
+      makanot_id: findVal(row, ["מזהה", "id_makanat", "worker_id", "workerid", "EmployeeID"]),
+      notes: findVal(row, ["הערות", "notes", "remarks", "comment"]),
+      status: "פעיל",
+    };
+  };
 
   const doImport = async () => {
     setImporting(true);
