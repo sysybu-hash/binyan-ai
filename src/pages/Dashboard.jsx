@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from "recharts";
 import { supabase } from "../lib/supabase";
+import ProjectDetail from "./ProjectDetail";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const GEMINI_KEY = "AIzaSyBGHRBPMN8vokpEfQYpO7ICNngZPKd5xwU";
@@ -166,7 +167,7 @@ function DashboardPage({ projects, loading }) {
 }
 
 // ── Projects Page ──────────────────────────────────────────────────────────
-function ProjectsPage({ projects, loading, onAdd, onEdit, onDelete }) {
+function ProjectsPage({ projects, loading, onAdd, onEdit, onDelete, onOpen }) {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
@@ -179,8 +180,10 @@ function ProjectsPage({ projects, loading, onAdd, onEdit, onDelete }) {
             const pct = Math.min(p.progress, 100);
             const over = p.progress > 100, warn = p.progress >= 90;
             const barColor = over ? "#E05C5C" : warn ? "#E0A84C" : "#C9A84C";
-            return <div key={p.id} style={{ ...card, display: "grid", gridTemplateColumns: "1fr auto", gap: "1rem", alignItems: "center" }}>
-              <div>
+            return <div key={p.id} style={{ ...card, display: "grid", gridTemplateColumns: "1fr auto", gap: "1rem", alignItems: "center", cursor: "pointer", transition: "border-color 0.2s" }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = "rgba(201,168,76,0.4)"}
+              onMouseLeave={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)"}>
+              <div onClick={() => onOpen(p)}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.4rem" }}>
                   <span style={{ color: "#E8E0D0", fontWeight: 600 }}>{p.name}</span>
                   <span style={{ background: over ? "rgba(224,92,92,0.2)" : warn ? "rgba(224,168,76,0.2)" : "rgba(201,168,76,0.15)", color: barColor, borderRadius: "0.4rem", padding: "0.1rem 0.5rem", fontSize: "0.68rem", fontWeight: 600 }}>{p.status}</span>
@@ -193,8 +196,9 @@ function ProjectsPage({ projects, loading, onAdd, onEdit, onDelete }) {
                 </div>
               </div>
               <div style={{ display: "flex", gap: "0.5rem" }}>
-                <button onClick={() => onEdit(p)} style={{ background: "rgba(201,168,76,0.1)", border: "1px solid rgba(201,168,76,0.2)", borderRadius: "0.5rem", color: "#C9A84C", padding: "0.4rem 0.8rem", cursor: "pointer", fontSize: "0.8rem" }}>✏️ ערוך</button>
-                <button onClick={() => onDelete(p.id)} style={{ background: "rgba(224,92,92,0.1)", border: "1px solid rgba(224,92,92,0.2)", borderRadius: "0.5rem", color: "#E05C5C", padding: "0.4rem 0.8rem", cursor: "pointer", fontSize: "0.8rem" }}>🗑️ מחק</button>
+                <button onClick={() => onOpen(p)} style={{ background: "rgba(201,168,76,0.15)", border: "1px solid rgba(201,168,76,0.3)", borderRadius: "0.5rem", color: "#C9A84C", padding: "0.4rem 0.8rem", cursor: "pointer", fontSize: "0.8rem", fontWeight: 600 }}>📂 פתח</button>
+                <button onClick={() => onEdit(p)} style={{ background: "rgba(201,168,76,0.1)", border: "1px solid rgba(201,168,76,0.2)", borderRadius: "0.5rem", color: "#C9A84C", padding: "0.4rem 0.8rem", cursor: "pointer", fontSize: "0.8rem" }}>✏️</button>
+                <button onClick={() => onDelete(p.id)} style={{ background: "rgba(224,92,92,0.1)", border: "1px solid rgba(224,92,92,0.2)", borderRadius: "0.5rem", color: "#E05C5C", padding: "0.4rem 0.8rem", cursor: "pointer", fontSize: "0.8rem" }}>🗑️</button>
               </div>
             </div>;
           })}
@@ -755,6 +759,7 @@ export default function Dashboard() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
+  const [selectedProject, setSelectedProject] = useState(null);
   const [time, setTime] = useState(new Date());
 
   useEffect(() => { const t = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(t); }, []);
@@ -783,7 +788,7 @@ export default function Dashboard() {
   };
 
   return (
-    <div dir="rtl" style={{ minHeight: "100vh", background: "linear-gradient(135deg, #0D1B2E 0%, #111827 50%, #0A1628 100%)", fontFamily: "'Assistant', 'Heebo', sans-serif", color: "#E8E0D0", display: "flex", overflow: "hidden" }}>
+    <div dir="rtl" style={{ minHeight: "100vh", width: "100vw", maxWidth: "100%", background: "linear-gradient(135deg, #0D1B2E 0%, #111827 50%, #0A1628 100%)", fontFamily: "'Assistant', 'Heebo', sans-serif", color: "#E8E0D0", display: "flex", overflow: "hidden" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;500;600;700;800&family=Playfair+Display:wght@400;600;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -806,7 +811,8 @@ export default function Dashboard() {
         </div>
 
         {activeNav === "dashboard" && <DashboardPage projects={projects} loading={loading} />}
-        {activeNav === "projects" && <ProjectsPage projects={projects} loading={loading} onAdd={() => setModal("add")} onEdit={p => setModal(p)} onDelete={handleDelete} />}
+        {activeNav === "projects" && !selectedProject && <ProjectsPage projects={projects} loading={loading} onAdd={() => setModal("add")} onEdit={p => setModal(p)} onDelete={handleDelete} onOpen={p => setSelectedProject(p)} />}
+        {activeNav === "projects" && selectedProject && <ProjectDetail project={selectedProject} onBack={() => setSelectedProject(null)} onUpdate={fetchProjects} />}
         {activeNav === "quantities" && <QuantitiesPage projects={projects} />}
         {activeNav === "scanner" && <ScannerPage projects={projects} />}
         {activeNav === "model3d" && <Model3DPage />}
