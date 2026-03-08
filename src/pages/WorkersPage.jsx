@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import WorkerDetail from "./WorkerDetail";
 import { supabase } from "../lib/supabase";
 
 const fmt = (n) => !n ? "₪0" : `₪${Number(n).toLocaleString()}`;
@@ -122,7 +123,7 @@ function AssignmentModal({ worker, projects, onSave, onClose }) {
 }
 
 // ── Worker Card ───────────────────────────────────────────────────────────
-function WorkerCard({ worker, projects, assignments, onEdit, onDelete, onAssign }) {
+function WorkerCard({ worker, projects, assignments, onEdit, onDelete, onAssign, onOpen }) {
   const workerAssignments = assignments.filter(a => a.worker_id === worker.id);
   const activeAssignment = workerAssignments.find(a => a.status === "פעיל");
   const project = activeAssignment ? projects.find(p => p.id === activeAssignment.project_id) : null;
@@ -163,6 +164,7 @@ function WorkerCard({ worker, projects, assignments, onEdit, onDelete, onAssign 
       )}
 
       <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.8rem" }}>
+        <button onClick={() => onOpen(worker)} style={{ background: "rgba(201,168,76,0.15)", border: "1px solid rgba(201,168,76,0.3)", borderRadius: "0.5rem", color: "#C9A84C", padding: "0.3rem 0.7rem", cursor: "pointer", fontSize: "0.75rem", fontWeight: 600 }}>📂 פתח</button>
         <button onClick={() => onAssign(worker)} style={{ background: "rgba(92,201,138,0.1)", border: "1px solid rgba(92,201,138,0.2)", borderRadius: "0.5rem", color: "#5CC98A", padding: "0.3rem 0.7rem", cursor: "pointer", fontSize: "0.75rem" }}>+ שייך לפרויקט</button>
         <button onClick={() => onEdit(worker)} style={{ background: "rgba(201,168,76,0.1)", border: "1px solid rgba(201,168,76,0.2)", borderRadius: "0.5rem", color: "#C9A84C", padding: "0.3rem 0.7rem", cursor: "pointer", fontSize: "0.75rem" }}>✏️ ערוך</button>
         <button onClick={() => onDelete(worker.id)} style={{ background: "rgba(224,92,92,0.1)", border: "1px solid rgba(224,92,92,0.2)", borderRadius: "0.5rem", color: "#E05C5C", padding: "0.3rem 0.7rem", cursor: "pointer", fontSize: "0.75rem" }}>🗑️</button>
@@ -228,26 +230,22 @@ function MakanatImport({ onImport, onClose }) {
     }
   };
 
-  const findVal = (row, keys) => {
-    for (const k of keys) {
-      const found = Object.entries(row).find(([key]) => key.includes(k));
-      if (found && found[1]) return String(found[1]).trim();
-    }
-    return "";
-  };
-
   const mapWorker = (row) => {
-    const name = findVal(row, ["שם", "name", "Name", "EMPLOYEE", "עובד"]) || Object.values(row).find(v => v && String(v).trim()) || "לא ידוע";
+    // תמיכה מלאה בפורמט מקאנו
+    const firstName = String(row["שם פרטי"] || row["שם"] || row["name"] || "").trim();
+    const lastName = String(row["שם משפחה"] || "").trim();
+    const name = lastName ? `${firstName} ${lastName}`.trim() : firstName || Object.values(row).find(v => v && String(v).trim()) || "לא ידוע";
+    const status = String(row["סטאטוס"] || row["מצב נוכחי"] || row["status"] || "פעיל").trim();
     return {
       name,
-      phone: findVal(row, ["טלפון", "phone", "נייד", "mobile", "cel", "Phone"]),
-      role: findVal(row, ["תפקיד", "role", "מקצוע", "job", "Job", "position", "Position"]),
-      company: findVal(row, ["חברה", "company", "קבלן", "employer", "Employer"]),
-      id_number: findVal(row, ["ת.ז", "תז", "id_number", "ID", "מספר", "passport"]),
-      daily_rate: Number(findVal(row, ["שכר יומי", "שכר", "daily_rate", "rate", "salary"]).replace(/[^0-9.]/g, "") || 0),
-      makanot_id: findVal(row, ["מזהה", "id_makanat", "worker_id", "workerid", "EmployeeID"]),
-      notes: findVal(row, ["הערות", "notes", "remarks", "comment"]),
-      status: "פעיל",
+      phone: String(row["טלפון"] || row["נייד"] || row["phone"] || "").trim(),
+      role: String(row["תפקיד"] || row["מקצוע"] || row["role"] || "").trim(),
+      company: String(row["מחלקה"] || row["חברה"] || row["קבלן"] || row["הסכם עבודה"] || "").trim(),
+      id_number: String(row["ת.ז"] || row["תז"] || row["מספר עובד"] || "").trim(),
+      daily_rate: 0,
+      makanot_id: String(row["מספר עובד"] || row["תג עובד במערכת שכר"] || "").trim(),
+      notes: String(row["כתובת"] || row["עיר"] ? `${row["כתובת"] || ""} ${row["עיר"] || ""}`.trim() : (row["הערות"] || "")).trim(),
+      status: status === "פעיל" ? "פעיל" : "לא פעיל",
     };
   };
 
@@ -338,6 +336,7 @@ export default function WorkersPage({ projects }) {
   const [filterRole, setFilterRole] = useState("הכל");
   const [filterStatus, setFilterStatus] = useState("הכל");
   const [view, setView] = useState("grid");
+  const [selectedWorker, setSelectedWorker] = useState(null);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -376,6 +375,8 @@ export default function WorkersPage({ projects }) {
     <div dir="rtl" style={{ fontFamily: "'Assistant', sans-serif" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Assistant:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap'); @media(max-width:600px){.workers-grid{grid-template-columns:1fr!important}.workers-stats{grid-template-columns:1fr 1fr!important}}`}</style>
 
+      {selectedWorker && <WorkerDetail worker={selectedWorker} projects={projects} onBack={() => setSelectedWorker(null)} />}
+      {!selectedWorker && <div>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "1rem", marginBottom: "1.5rem" }}>
         <div>
@@ -435,7 +436,7 @@ export default function WorkersPage({ projects }) {
       ) : view === "grid" ? (
         <div className="workers-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "1rem" }}>
           {filtered.map(w => (
-            <WorkerCard key={w.id} worker={w} projects={projects} assignments={assignments} onEdit={setModal} onDelete={deleteWorker} onAssign={setAssignModal} />
+            <WorkerCard key={w.id} worker={w} projects={projects} assignments={assignments} onEdit={setModal} onDelete={deleteWorker} onAssign={setAssignModal} onOpen={setSelectedWorker} />
           ))}
         </div>
       ) : (
@@ -484,6 +485,7 @@ export default function WorkersPage({ projects }) {
       {modal !== null && <WorkerModal worker={modal?.id ? modal : null} projects={projects} onSave={() => { fetchAll(); setModal(null); }} onClose={() => setModal(null)} />}
       {assignModal && <AssignmentModal worker={assignModal} projects={projects} onSave={() => { fetchAll(); setAssignModal(null); }} onClose={() => setAssignModal(null)} />}
       {showImport && <MakanatImport onImport={() => { fetchAll(); setShowImport(false); }} onClose={() => setShowImport(false)} />}
+      </div>}
     </div>
   );
 }
