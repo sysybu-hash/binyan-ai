@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from "recharts";
 import { supabase } from "../lib/supabase";
 import ProjectDetail from "./ProjectDetail";
+import WorkersPage from "./WorkersPage";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const GEMINI_KEY = "AIzaSyBGHRBPMN8vokpEfQYpO7ICNngZPKd5xwU";
@@ -31,6 +32,7 @@ const NAV_ITEMS = [
   { id: "finance", label: "כספים", icon: "◎" },
   { id: "reports", label: "דוחות PDF", icon: "▤" },
   { id: "security", label: "אבטחה", icon: "◬" },
+  { id: "workers", label: "עובדים", icon: "👷" },
 ];
 
 const fmt = (n) => !n ? "₪0" : n >= 1000000 ? `₪${(n / 1000000).toFixed(1)}M` : `₪${(n / 1000).toFixed(0)}K`;
@@ -819,6 +821,7 @@ export default function Dashboard() {
         {activeNav === "finance" && <FinancePage projects={projects} />}
         {activeNav === "reports" && <ReportsPage projects={projects} />}
         {activeNav === "security" && <SecurityPage />}
+        {activeNav === "workers" && <WorkersPage projects={projects} />}
       </main>
 
       {modal && <ProjectModal project={modal === "add" ? null : modal} onSave={handleSave} onClose={() => setModal(null)} />}
