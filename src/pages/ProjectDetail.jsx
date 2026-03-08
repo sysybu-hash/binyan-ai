@@ -1,165 +1,219 @@
 import { useState, useEffect, useRef } from "react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import { supabase } from "../lib/supabase";
 
-const GEMINI_KEY = "AIzaSyBGHRBPMN8vokpEfQYpO7ICNngZPKd5xwU";
-const fmt = (n) => !n ? "₪0" : n >= 1000000 ? `₪${(n / 1000000).toFixed(2)}M` : `₪${Number(n).toLocaleString()}`;
-
-const card = { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "1.2rem", padding: "1.2rem 1.5rem" };
-const inputStyle = { width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(201,168,76,0.2)", borderRadius: "0.6rem", color: "#E8E0D0", padding: "0.6rem 0.8rem", fontSize: "0.85rem", fontFamily: "'Assistant', sans-serif", outline: "none" };
-const btnGold = { background: "linear-gradient(135deg, #C9A84C, #8B6914)", border: "none", borderRadius: "0.75rem", color: "#0D1B2E", padding: "0.6rem 1.2rem", fontWeight: 700, cursor: "pointer", fontSize: "0.85rem", fontFamily: "'Assistant', sans-serif" };
-const btnGhost = { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "0.75rem", color: "#8B9DB5", padding: "0.6rem 1.2rem", cursor: "pointer", fontSize: "0.85rem", fontFamily: "'Assistant', sans-serif" };
-
 const TABS = [
-  { id: "overview", label: "סקירה כללית", icon: "⬡" },
+  { id: "overview", label: "סקירה", icon: "📊" },
   { id: "invoices", label: "חשבוניות", icon: "🧾" },
-  { id: "files", label: "תוכניות מהנדס", icon: "📐" },
-  { id: "quantities", label: "בינראית", icon: "⊞" },
+  { id: "files", label: "תוכניות וקבצים", icon: "📁" },
+  { id: "quantities", label: "בינראית", icon: "📐" },
   { id: "timeline", label: "לוח זמנים", icon: "📅" },
+  { id: "messages", label: "הודעות ללקוח", icon: "💬" },
 ];
 
-const STATUS_COLORS = { "פעיל": "#5CC98A", "סיכון": "#E0A84C", "חריגה": "#E05C5C", "הושלם": "#C9A84C", "מושהה": "#8B9DB5" };
+// ─── AI Scanner ─────────────────────────────────────────────────────────────
+async function scanWithGemini(file) {
+  const key = import.meta.env.VITE_GEMINI_KEY;
+  if (!key) throw new Error("מפתח Gemini חסר — הוסף VITE_GEMINI_KEY ל-.env.local");
 
-// ── AI Analysis ──────────────────────────────────────────────────────────
-async function analyzeWithGemini(file, type) {
-  const base64 = await new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result.split(",")[1]);
-    r.onerror = rej;
-    r.readAsDataURL(file);
-  });
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64 = e.target.result.split(",")[1];
+      const mimeType = file.type || "image/jpeg";
 
-  const prompts = {
-    invoice: 'Extract from this invoice. Reply ONLY in JSON: {"supplier":"...","amount":0,"date":"...","vat":0,"total_before_vat":0,"items":[{"desc":"...","qty":0,"unit_price":0,"total":0}],"invoice_number":"...","confidence":95}',
-    blueprint: 'Analyze this construction blueprint. Reply ONLY in JSON: {"building_type":"...","area_sqm":0,"floors":0,"rooms":0,"width":0,"length":0,"height":0,"materials":[{"name":"...","quantity":0,"unit":"...","estimated_cost":0}],"total_estimated_cost":0,"notes":"...","confidence":90}',
-    document: 'Analyze this construction document. Reply ONLY in JSON: {"doc_type":"...","summary":"...","key_points":["..."],"risks":["..."],"recommendations":["..."],"confidence":85}'
-  };
+      const prompt = `אתה מומחה לניתוח מסמכים פיננסיים והנדסיים בעברית.
+נתח את המסמך המצורף בדקדקנות מלאה והחזר JSON בלבד (ללא markdown, ללא backticks).
 
-  const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompts[type] }, { inline_data: { mime_type: file.type.startsWith("image") ? file.type : "application/pdf", data: base64 } }] }] })
-  });
-  const data = await resp.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  return JSON.parse(text.replace(/```json|```/g, "").trim());
+החזר בפורמט הזה:
+{
+  "doc_type": "חשבונית" | "תוכנית הנדסית" | "חוזה" | "דוח" | "אחר",
+  "supplier": "שם הספק/קבלן",
+  "invoice_number": "מספר חשבונית אם יש",
+  "date": "תאריך המסמך",
+  "amount_before_vat": 0,
+  "vat": 0,
+  "total_amount": 0,
+  "currency": "ILS",
+  "description": "תיאור העבודה/השירות",
+  "items": [{"desc": "פריט", "qty": 1, "unit_price": 0, "total": 0}],
+  "notes": "הערות חשובות",
+  "confidence": 0.95
 }
 
-// ── Overview Tab ──────────────────────────────────────────────────────────
-function OverviewTab({ project, invoices, files, quantities }) {
-  const totalInvoices = invoices.reduce((s, i) => s + (Number(i.amount) || 0), 0);
-  const approvedInvoices = invoices.filter(i => i.status === "מאושר").reduce((s, i) => s + (Number(i.amount) || 0), 0);
-  const pendingInvoices = invoices.filter(i => i.status === "ממתין לאישור").length;
-  const totalQty = quantities.reduce((s, q) => s + (q.actual * q.price), 0);
-  const pct = project.budget > 0 ? Math.round(project.spent / project.budget * 100) : 0;
-  const barColor = pct > 100 ? "#E05C5C" : pct >= 90 ? "#E0A84C" : "#C9A84C";
+חשוב מאוד:
+- הסכומים חייבים להיות מספרים (לא מחרוזות)
+- אם אין מע"מ, חשב 17% מהסכום לפני מע"מ
+- confidence = רמת הוודאות שלך (0-1)
+- אם המסמך הוא תוכנית הנדסית ולא חשבונית, הסכומים יהיו 0`;
 
-  const pieData = [
-    { name: "בוצע", value: Number(project.spent) || 0, color: "#C9A84C" },
-    { name: "נותר", value: Math.max(0, (Number(project.budget) || 0) - (Number(project.spent) || 0)), color: "rgba(255,255,255,0.08)" },
-  ];
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${key}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { inline_data: { mime_type: mimeType, data: base64 } },
+                  { text: prompt }
+                ]
+              }],
+              generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
+            })
+          }
+        );
+
+        if (!response.ok) {
+          const err = await response.json();
+          throw new Error(err.error?.message || `HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        const cleaned = text.replace(/```json|```/g, "").trim();
+        const parsed = JSON.parse(cleaned);
+        resolve(parsed);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = () => reject(new Error("שגיאה בקריאת הקובץ"));
+    reader.readAsDataURL(file);
+  });
+}
+
+// ─── Overview Tab ────────────────────────────────────────────────────────────
+function OverviewTab({ project, onUpdate }) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({ ...project });
+  const [saving, setSaving] = useState(false);
+
+  const pct = project.budget > 0 ? Math.min((project.spent / project.budget) * 100, 110) : 0;
+  const barColor = pct > 100 ? "#ef4444" : pct > 85 ? "#f59e0b" : "#22c55e";
+  const remaining = (project.budget || 0) - (project.spent || 0);
+
+  const save = async () => {
+    setSaving(true);
+    const { error } = await supabase.from("projects").update(form).eq("id", project.id);
+    if (!error) { onUpdate(form); setEditing(false); }
+    setSaving(false);
+  };
+
+  const inp = (label, key, type = "text") => (
+    <div>
+      <label style={lbl}>{label}</label>
+      <input type={type} value={form[key] || ""} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} style={inp2} />
+    </div>
+  );
 
   return (
-    <div style={{ display: "grid", gap: "1.2rem" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
       {/* KPI Row */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "1rem" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "1rem" }}>
         {[
-          { icon: "💰", label: "תקציב מאושר", value: fmt(project.budget), color: "#C9A84C" },
-          { icon: "📊", label: "הוצאות בפועל", value: fmt(project.spent), color: pct > 100 ? "#E05C5C" : "#5CC98A" },
-          { icon: "🧾", label: "חשבוניות סה״כ", value: fmt(totalInvoices), color: "#B8C4D4" },
-          { icon: "⏳", label: "ממתינות לאישור", value: pendingInvoices, color: pendingInvoices > 0 ? "#E0A84C" : "#5CC98A" },
-          { icon: "📐", label: "תוכניות מהנדס", value: files.length, color: "#B8C4D4" },
-          { icon: "📅", label: "ימים לסיום", value: project.days_left, color: project.days_left < 30 ? "#E05C5C" : "#5CC98A" },
+          { label: "תקציב מאושר", val: `₪${(project.budget||0).toLocaleString()}`, color: "#3b82f6" },
+          { label: "הוצאות בפועל", val: `₪${(project.spent||0).toLocaleString()}`, color: pct > 100 ? "#ef4444" : "#E8A84C" },
+          { label: "יתרה", val: `₪${remaining.toLocaleString()}`, color: remaining < 0 ? "#ef4444" : "#22c55e" },
+          { label: "ימים לסיום", val: project.days_left || "—", color: "#a78bfa" },
         ].map(k => (
-          <div key={k.label} style={{ ...card, padding: "1rem" }}>
-            <div style={{ fontSize: "1.4rem", marginBottom: "0.3rem" }}>{k.icon}</div>
-            <div style={{ color: "#8B9DB5", fontSize: "0.7rem", marginBottom: "0.2rem" }}>{k.label}</div>
-            <div style={{ color: k.color, fontSize: "1.3rem", fontWeight: 700, fontFamily: "'Playfair Display', serif" }}>{k.value}</div>
+          <div key={k.label} style={card}>
+            <div style={{ fontSize: "0.8rem", color: "#8B9DBS", marginBottom: "0.3rem" }}>{k.label}</div>
+            <div style={{ fontSize: "1.4rem", fontWeight: 700, color: k.color }}>{k.val}</div>
           </div>
         ))}
       </div>
 
-      {/* Budget Bar + Pie */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: "1.2rem" }}>
-        <div style={card}>
-          <h3 style={{ color: "#E8E0D0", fontSize: "0.95rem", marginBottom: "1.2rem", fontWeight: 600 }}>ניצול תקציב</h3>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
-            <span style={{ color: "#8B9DB5", fontSize: "0.8rem" }}>{fmt(project.spent)} מתוך {fmt(project.budget)}</span>
-            <span style={{ color: barColor, fontWeight: 700, fontSize: "0.9rem" }}>{pct}%</span>
-          </div>
-          <div style={{ background: "rgba(255,255,255,0.08)", borderRadius: "1rem", height: "16px", overflow: "hidden", marginBottom: "1rem" }}>
-            <div style={{ width: `${Math.min(pct, 100)}%`, height: "100%", background: `linear-gradient(90deg, ${barColor}88, ${barColor})`, borderRadius: "1rem", transition: "width 1s" }} />
-          </div>
-          {pct >= 90 && (
-            <div style={{ background: pct > 100 ? "rgba(224,92,92,0.1)" : "rgba(224,168,76,0.1)", border: `1px solid ${pct > 100 ? "rgba(224,92,92,0.3)" : "rgba(224,168,76,0.3)"}`, borderRadius: "0.6rem", padding: "0.6rem 0.8rem", fontSize: "0.8rem", color: pct > 100 ? "#E05C5C" : "#E0A84C" }}>
-              {pct > 100 ? "⚠️ חריגת תקציב! יש לבחון מיידית" : "⚡ קרוב לגבול התקציב — נדרש מעקב"}
-            </div>
-          )}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.8rem", marginTop: "1rem" }}>
-            <div style={{ background: "rgba(92,201,138,0.08)", borderRadius: "0.6rem", padding: "0.7rem" }}>
-              <div style={{ color: "#8B9DB5", fontSize: "0.7rem" }}>חשבוניות מאושרות</div>
-              <div style={{ color: "#5CC98A", fontWeight: 700 }}>{fmt(approvedInvoices)}</div>
-            </div>
-            <div style={{ background: "rgba(201,168,76,0.08)", borderRadius: "0.6rem", padding: "0.7rem" }}>
-              <div style={{ color: "#8B9DB5", fontSize: "0.7rem" }}>יתרה לביצוע</div>
-              <div style={{ color: "#C9A84C", fontWeight: 700 }}>{fmt(Math.max(0, project.budget - project.spent))}</div>
-            </div>
-          </div>
+      {/* Budget Bar */}
+      <div style={card}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+          <span style={{ color: "#E8E0D5", fontWeight: 600 }}>ניצול תקציב</span>
+          <span style={{ color: barColor, fontWeight: 700 }}>{pct.toFixed(1)}%</span>
         </div>
-        <div style={{ ...card, display: "flex", flexDirection: "column", alignItems: "center" }}>
-          <h3 style={{ color: "#E8E0D0", fontSize: "0.95rem", marginBottom: "0.5rem", fontWeight: 600, alignSelf: "flex-start" }}>ביצוע</h3>
-          <PieChart width={140} height={140}>
-            <Pie data={pieData} cx={70} cy={70} innerRadius={45} outerRadius={65} paddingAngle={2} dataKey="value">
-              {pieData.map((e, i) => <Cell key={i} fill={e.color} />)}
-            </Pie>
-          </PieChart>
-          <div style={{ color: "#C9A84C", fontSize: "2rem", fontWeight: 700, fontFamily: "'Playfair Display', serif", marginTop: "-0.5rem" }}>{project.progress}%</div>
-          <div style={{ color: "#8B9DB5", fontSize: "0.75rem" }}>אחוז ביצוע</div>
-          <div style={{ marginTop: "0.8rem", padding: "0.4rem 0.8rem", background: `${STATUS_COLORS[project.status]}22`, borderRadius: "0.5rem", color: STATUS_COLORS[project.status], fontSize: "0.8rem", fontWeight: 600 }}>{project.status}</div>
+        <div style={{ background: "rgba(255,255,255,0.1)", borderRadius: "999px", height: "12px" }}>
+          <div style={{ width: `${Math.min(pct,100)}%`, background: barColor, borderRadius: "999px", height: "100%", transition: "width 0.6s" }} />
         </div>
+        {pct > 100 && (
+          <div style={{ color: "#ef4444", fontSize: "0.85rem", marginTop: "0.5rem" }}>
+            ⚠️ חריגה של ₪{Math.abs(remaining).toLocaleString()}
+          </div>
+        )}
       </div>
 
-      {/* Project Details */}
-      <div style={card}>
-        <h3 style={{ color: "#E8E0D0", fontSize: "0.95rem", marginBottom: "1rem", fontWeight: 600 }}>פרטי פרויקט</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.8rem" }}>
-          {[
-            ["לקוח", project.client || "-"],
-            ["שלב ביצוע", project.phase || "-"],
-            ["סטטוס", project.status],
-            ["ימים שנותרו", `${project.days_left} ימים`],
-            ["תאריך עדכון", new Date(project.created_at).toLocaleDateString("he-IL")],
-            ["מזהה פרויקט", project.id?.slice(0, 8) + "..."],
-          ].map(([l, v]) => (
-            <div key={l} style={{ background: "rgba(255,255,255,0.02)", borderRadius: "0.6rem", padding: "0.7rem 0.9rem" }}>
-              <div style={{ color: "#8B9DB5", fontSize: "0.7rem", marginBottom: "0.2rem" }}>{l}</div>
-              <div style={{ color: "#E8E0D0", fontSize: "0.88rem", fontWeight: 500 }}>{v}</div>
-            </div>
-          ))}
+      {/* Details */}
+      {editing ? (
+        <div style={card}>
+          <h3 style={{ color: "#E8A84C", marginBottom: "1rem" }}>✏️ עריכת פרויקט</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
+            {inp("שם פרויקט", "name")}
+            {inp("לקוח", "client")}
+            {inp("תקציב", "budget", "number")}
+            {inp("הוצאות", "spent", "number")}
+            {inp("סטטוס", "status")}
+            {inp("שלב", "phase")}
+            {inp("% ביצוע", "progress", "number")}
+            {inp("ימים לסיום", "days_left", "number")}
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem" }}>
+            <button onClick={save} disabled={saving} style={btnPrimary}>{saving ? "שומר..." : "💾 שמור"}</button>
+            <button onClick={() => setEditing(false)} style={btnSecondary}>ביטול</button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div style={card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+            <h3 style={{ color: "#E8A84C" }}>📋 פרטי פרויקט</h3>
+            <button onClick={() => setEditing(true)} style={btnSecondary}>✏️ ערוך</button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+            {[
+              ["לקוח", project.client],
+              ["סטטוס", project.status],
+              ["שלב", project.phase],
+              ["% ביצוע", `${project.progress || 0}%`],
+            ].map(([k, v]) => (
+              <div key={k} style={{ background: "rgba(255,255,255,0.04)", borderRadius: "0.75rem", padding: "0.75rem" }}>
+                <div style={{ fontSize: "0.8rem", color: "#8B9DBS" }}>{k}</div>
+                <div style={{ color: "#E8E0D5", fontWeight: 600 }}>{v || "—"}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// ── Invoices Tab ──────────────────────────────────────────────────────────
-function InvoicesTab({ project, invoices, onRefresh }) {
+// ─── Invoices Tab ────────────────────────────────────────────────────────────
+function InvoicesTab({ projectId }) {
+  const [invoices, setInvoices] = useState([]);
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
-  const [scanFile, setScanFile] = useState(null);
+  const [scanError, setScanError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [approving, setApproving] = useState(null);
+  const [preview, setPreview] = useState(null);
   const fileRef = useRef();
 
-  const handleScan = async (file) => {
-    setScanFile(file);
-    setScanning(true);
+  useEffect(() => { loadInvoices(); }, [projectId]);
+
+  const loadInvoices = async () => {
+    const { data } = await supabase.from("invoices").select("*")
+      .eq("project_id", projectId).order("created_at", { ascending: false });
+    if (data) setInvoices(data);
+  };
+
+  const onFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setScanError("");
     setScanResult(null);
+    setPreview(URL.createObjectURL(file));
+    setScanning(true);
     try {
-      const result = await analyzeWithGemini(file, "invoice");
-      setScanResult(result);
-    } catch {
-      setScanResult({ supplier: "ספק לא זוהה", amount: 0, date: new Date().toLocaleDateString("he-IL"), items: [], confidence: 0, invoice_number: "-" });
+      const result = await scanWithGemini(file);
+      setScanResult({ ...result, _file: file.name });
+    } catch (err) {
+      setScanError(err.message);
     }
     setScanning(false);
   };
@@ -167,450 +221,655 @@ function InvoicesTab({ project, invoices, onRefresh }) {
   const saveInvoice = async () => {
     if (!scanResult) return;
     setSaving(true);
-    await supabase.from("invoices").insert([{
-      project_id: project.id,
-      supplier: scanResult.supplier,
-      amount: scanResult.amount,
-      date: scanResult.date,
-      items: scanResult.items,
+    const { error } = await supabase.from("invoices").insert({
+      project_id: projectId,
+      supplier: scanResult.supplier || "",
+      invoice_number: scanResult.invoice_number || "",
+      date: scanResult.date || new Date().toISOString().split("T")[0],
+      amount_before_vat: scanResult.amount_before_vat || 0,
+      vat: scanResult.vat || 0,
+      total_amount: scanResult.total_amount || 0,
+      description: scanResult.description || "",
+      doc_type: scanResult.doc_type || "חשבונית",
       status: "ממתין לאישור",
-      ai_confidence: scanResult.confidence,
-      invoice_number: scanResult.invoice_number,
-    }]);
-    setScanResult(null);
-    setScanFile(null);
-    onRefresh();
+      confidence: scanResult.confidence || 0,
+    });
+    if (!error) {
+      await supabase.from("projects").update({
+        spent: supabase.rpc ? undefined : undefined
+      }).eq("id", projectId);
+      setScanResult(null);
+      setPreview(null);
+      loadInvoices();
+    }
     setSaving(false);
   };
 
-  const approveInvoice = async (id) => {
-    setApproving(id);
-    await supabase.from("invoices").update({ status: "מאושר", approved_by: "מנהל" }).eq("id", id);
-    const inv = invoices.find(i => i.id === id);
-    if (inv) await supabase.from("projects").update({ spent: (Number(project.spent) || 0) + Number(inv.amount) }).eq("id", project.id);
-    onRefresh();
-    setApproving(null);
+  const approveInvoice = async (inv) => {
+    await supabase.from("invoices").update({ status: "מאושר" }).eq("id", inv.id);
+    // Update project spent
+    const newSpent = invoices
+      .filter(i => i.id === inv.id ? true : i.status === "מאושר")
+      .filter(i => i.id === inv.id ? true : true)
+      .reduce((s, i) => s + (i.id === inv.id ? inv.total_amount : i.status === "מאושר" ? i.total_amount : 0), 0);
+    await supabase.from("projects").update({ spent: newSpent }).eq("id", projectId);
+    loadInvoices();
   };
 
   const deleteInvoice = async (id) => {
-    if (!window.confirm("למחוק חשבונית זו?")) return;
+    if (!confirm("למחוק חשבונית זו?")) return;
     await supabase.from("invoices").delete().eq("id", id);
-    onRefresh();
+    loadInvoices();
   };
 
-  const total = invoices.reduce((s, i) => s + (Number(i.amount) || 0), 0);
-  const approved = invoices.filter(i => i.status === "מאושר").reduce((s, i) => s + (Number(i.amount) || 0), 0);
-  const pending = invoices.filter(i => i.status === "ממתין לאישור").length;
+  const confidenceColor = (c) => c > 0.85 ? "#22c55e" : c > 0.6 ? "#f59e0b" : "#ef4444";
 
   return (
-    <div style={{ display: "grid", gap: "1.2rem" }}>
-      {/* Stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "1rem" }}>
-        {[{ label: "סה״כ חשבוניות", value: fmt(total), color: "#C9A84C" }, { label: "מאושרות", value: fmt(approved), color: "#5CC98A" }, { label: "ממתינות לאישור", value: pending, color: pending > 0 ? "#E0A84C" : "#5CC98A" }].map(s => (
-          <div key={s.label} style={{ ...card, textAlign: "center", padding: "1rem" }}>
-            <div style={{ color: "#8B9DB5", fontSize: "0.72rem", marginBottom: "0.3rem" }}>{s.label}</div>
-            <div style={{ color: s.color, fontSize: "1.4rem", fontWeight: 700, fontFamily: "'Playfair Display', serif" }}>{s.value}</div>
-          </div>
-        ))}
-      </div>
-
+    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
       {/* Scanner */}
       <div style={card}>
-        <h3 style={{ color: "#E8E0D0", fontSize: "0.95rem", marginBottom: "1rem", fontWeight: 600 }}>🤖 סריקת חשבונית עם AI</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-          <div>
-            <div onClick={() => fileRef.current?.click()} style={{ border: "2px dashed rgba(201,168,76,0.3)", borderRadius: "0.8rem", padding: "2rem", textAlign: "center", cursor: "pointer" }}>
-              <div style={{ fontSize: "2rem" }}>📄</div>
-              <div style={{ color: "#C9A84C", fontSize: "0.82rem", marginTop: "0.3rem" }}>העלה חשבונית (PDF / תמונה)</div>
-              {scanFile && <div style={{ color: "#5CC98A", fontSize: "0.75rem", marginTop: "0.4rem" }}>✅ {scanFile.name}</div>}
-            </div>
-            <input ref={fileRef} type="file" accept=".pdf,image/*" style={{ display: "none" }} onChange={e => handleScan(e.target.files[0])} />
-            {scanning && <div style={{ textAlign: "center", color: "#C9A84C", padding: "1rem", fontSize: "0.85rem" }}>🔍 Gemini מנתח...</div>}
+        <h3 style={{ color: "#E8A84C", marginBottom: "1rem" }}>🤖 סריקת מסמך AI</h3>
+        <div
+          onClick={() => fileRef.current?.click()}
+          style={{
+            border: "2px dashed rgba(232,168,76,0.4)", borderRadius: "1rem",
+            padding: "2rem", textAlign: "center", cursor: "pointer",
+            background: "rgba(232,168,76,0.04)", marginBottom: "1rem",
+            transition: "all 0.2s",
+          }}
+        >
+          <div style={{ fontSize: "2.5rem" }}>📄</div>
+          <div style={{ color: "#E8A84C", fontWeight: 600 }}>לחץ להעלאת חשבונית / מסמך</div>
+          <div style={{ color: "#8B9DBS", fontSize: "0.85rem" }}>PDF, JPG, PNG — הAI יחלץ את כל הנתונים</div>
+        </div>
+        <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={onFile} style={{ display: "none" }} />
+
+        {scanning && (
+          <div style={{ textAlign: "center", color: "#E8A84C", padding: "1rem" }}>
+            ⟳ מנתח מסמך עם Gemini AI...
           </div>
-          {scanResult && !scanning && (
-            <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: "0.8rem", padding: "1rem" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.8rem" }}>
-                <span style={{ color: "#C9A84C", fontWeight: 600 }}>תוצאות סריקה</span>
-                <span style={{ background: scanResult.confidence >= 90 ? "rgba(92,201,138,0.2)" : "rgba(224,168,76,0.2)", color: scanResult.confidence >= 90 ? "#5CC98A" : "#E0A84C", borderRadius: "0.4rem", padding: "0.1rem 0.5rem", fontSize: "0.7rem" }}>
-                  דיוק: {scanResult.confidence}%
-                </span>
+        )}
+
+        {scanError && (
+          <div style={{ color: "#ef4444", background: "rgba(239,68,68,0.1)", borderRadius: "0.75rem", padding: "0.75rem", marginBottom: "1rem" }}>
+            ❌ {scanError}
+          </div>
+        )}
+
+        {scanResult && (
+          <div style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.3)", borderRadius: "1rem", padding: "1.25rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <div style={{ color: "#22c55e", fontWeight: 700 }}>✓ נתחלץ בהצלחה</div>
+              <div style={{ fontSize: "0.8rem", color: confidenceColor(scanResult.confidence) }}>
+                דיוק: {Math.round((scanResult.confidence || 0) * 100)}%
               </div>
-              {[["ספק", scanResult.supplier], ["סכום", `₪${Number(scanResult.amount).toLocaleString()}`], ["תאריך", scanResult.date], ["מס׳ חשבונית", scanResult.invoice_number]].map(([l, v]) => (
-                <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "0.3rem 0", borderBottom: "1px solid rgba(255,255,255,0.05)", fontSize: "0.82rem" }}>
-                  <span style={{ color: "#8B9DB5" }}>{l}</span>
-                  <span style={{ color: "#E8E0D0", fontWeight: 500 }}>{v}</span>
+            </div>
+            {scanResult.confidence < 0.7 && (
+              <div style={{ color: "#f59e0b", fontSize: "0.85rem", marginBottom: "0.75rem" }}>
+                ⚠️ רמת דיוק נמוכה — אמת ידנית לפני אישור
+              </div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginBottom: "1rem" }}>
+              {[
+                ["סוג מסמך", scanResult.doc_type],
+                ["ספק", scanResult.supplier],
+                ["מספר חשבונית", scanResult.invoice_number],
+                ["תאריך", scanResult.date],
+                ["לפני מע\"מ", scanResult.amount_before_vat ? `₪${Number(scanResult.amount_before_vat).toLocaleString()}` : "—"],
+                ["מע\"מ", scanResult.vat ? `₪${Number(scanResult.vat).toLocaleString()}` : "—"],
+                ["סה\"כ לתשלום", scanResult.total_amount ? `₪${Number(scanResult.total_amount).toLocaleString()}` : "—"],
+                ["תיאור", scanResult.description],
+              ].map(([k, v]) => (
+                <div key={k} style={{ background: "rgba(255,255,255,0.04)", borderRadius: "0.5rem", padding: "0.5rem 0.75rem" }}>
+                  <div style={{ fontSize: "0.75rem", color: "#8B9DBS" }}>{k}</div>
+                  <div style={{ color: "#E8E0D5", fontWeight: 600, fontSize: "0.9rem" }}>{v || "—"}</div>
                 </div>
               ))}
-              {scanResult.confidence < 80 && (
-                <div style={{ marginTop: "0.6rem", background: "rgba(224,168,76,0.1)", borderRadius: "0.5rem", padding: "0.5rem", fontSize: "0.75rem", color: "#E0A84C" }}>
-                  ⚠️ דיוק נמוך — אמת ידנית לפני שמירה
-                </div>
-              )}
-              <button onClick={saveInvoice} disabled={saving} style={{ ...btnGold, width: "100%", marginTop: "0.8rem" }}>
+            </div>
+            <div style={{ display: "flex", gap: "0.75rem" }}>
+              <button onClick={saveInvoice} disabled={saving} style={btnPrimary}>
                 {saving ? "שומר..." : "💾 שמור חשבונית"}
               </button>
+              <button onClick={() => { setScanResult(null); setPreview(null); }} style={btnSecondary}>
+                🗑️ בטל
+              </button>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      {/* Invoices List */}
+      {/* Invoice List */}
       <div style={card}>
-        <h3 style={{ color: "#E8E0D0", fontSize: "0.95rem", marginBottom: "1rem", fontWeight: 600 }}>היסטוריית חשבוניות ({invoices.length})</h3>
+        <h3 style={{ color: "#E8A84C", marginBottom: "1rem" }}>📋 היסטוריית חשבוניות ({invoices.length})</h3>
         {invoices.length === 0 ? (
-          <div style={{ textAlign: "center", color: "#8B9DB5", padding: "2rem" }}>אין חשבוניות עדיין — סרוק את הראשונה!</div>
+          <div style={{ textAlign: "center", color: "#8B9DBS", padding: "2rem" }}>אין חשבוניות עדיין</div>
         ) : (
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
-                <tr style={{ borderBottom: "1px solid rgba(201,168,76,0.2)" }}>
-                  {["ספק", "סכום", "תאריך", "מס׳ חשבונית", "דיוק AI", "סטטוס", "פעולות"].map(h => (
-                    <th key={h} style={{ color: "#C9A84C", padding: "0.6rem 0.5rem", textAlign: "right", fontWeight: 600 }}>{h}</th>
+                <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                  {["ספק", "מס׳", "תאריך", "סה\"כ", "סטטוס", "דיוק", "פעולות"].map(h => (
+                    <th key={h} style={{ padding: "0.5rem 0.75rem", color: "#8B9DBS", fontSize: "0.8rem", fontWeight: 600, textAlign: "right" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {invoices.map(inv => (
-                  <tr key={inv.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                    <td style={{ padding: "0.7rem 0.5rem", color: "#E8E0D0", fontWeight: 500 }}>{inv.supplier}</td>
-                    <td style={{ padding: "0.7rem 0.5rem", color: "#5CC98A", fontWeight: 700 }}>₪{Number(inv.amount).toLocaleString()}</td>
-                    <td style={{ padding: "0.7rem 0.5rem", color: "#B8C4D4" }}>{inv.date}</td>
-                    <td style={{ padding: "0.7rem 0.5rem", color: "#8B9DB5" }}>{inv.invoice_number || "-"}</td>
-                    <td style={{ padding: "0.7rem 0.5rem" }}>
-                      <span style={{ color: inv.ai_confidence >= 90 ? "#5CC98A" : inv.ai_confidence >= 70 ? "#E0A84C" : "#E05C5C", fontSize: "0.78rem" }}>
-                        {inv.ai_confidence || "-"}%
-                      </span>
-                    </td>
-                    <td style={{ padding: "0.7rem 0.5rem" }}>
-                      <span style={{ background: inv.status === "מאושר" ? "rgba(92,201,138,0.15)" : "rgba(224,168,76,0.15)", color: inv.status === "מאושר" ? "#5CC98A" : "#E0A84C", borderRadius: "0.4rem", padding: "0.15rem 0.5rem", fontSize: "0.72rem", fontWeight: 600 }}>
+                  <tr key={inv.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                    <td style={td}>{inv.supplier || "—"}</td>
+                    <td style={td}>{inv.invoice_number || "—"}</td>
+                    <td style={td}>{inv.date || "—"}</td>
+                    <td style={{ ...td, fontWeight: 700, color: "#E8A84C" }}>₪{Number(inv.total_amount || 0).toLocaleString()}</td>
+                    <td style={td}>
+                      <span style={{
+                        padding: "0.2rem 0.6rem", borderRadius: "0.5rem", fontSize: "0.75rem", fontWeight: 600,
+                        background: inv.status === "מאושר" ? "rgba(34,197,94,0.15)" : "rgba(245,158,11,0.15)",
+                        color: inv.status === "מאושר" ? "#22c55e" : "#f59e0b"
+                      }}>
                         {inv.status}
                       </span>
                     </td>
-                    <td style={{ padding: "0.7rem 0.5rem" }}>
+                    <td style={{ ...td, color: confidenceColor(inv.confidence || 0) }}>
+                      {Math.round((inv.confidence || 0) * 100)}%
+                    </td>
+                    <td style={td}>
                       <div style={{ display: "flex", gap: "0.4rem" }}>
                         {inv.status !== "מאושר" && (
-                          <button onClick={() => approveInvoice(inv.id)} disabled={approving === inv.id} style={{ background: "rgba(92,201,138,0.1)", border: "1px solid rgba(92,201,138,0.2)", borderRadius: "0.4rem", color: "#5CC98A", padding: "0.2rem 0.5rem", cursor: "pointer", fontSize: "0.72rem" }}>
-                            {approving === inv.id ? "..." : "✅ אשר"}
-                          </button>
+                          <button onClick={() => approveInvoice(inv)} style={{ ...btnMini, background: "rgba(34,197,94,0.2)", color: "#22c55e" }}>✓</button>
                         )}
-                        <button onClick={() => deleteInvoice(inv.id)} style={{ background: "rgba(224,92,92,0.1)", border: "1px solid rgba(224,92,92,0.2)", borderRadius: "0.4rem", color: "#E05C5C", padding: "0.2rem 0.5rem", cursor: "pointer", fontSize: "0.72rem" }}>🗑️</button>
+                        <button onClick={() => deleteInvoice(inv.id)} style={{ ...btnMini, background: "rgba(239,68,68,0.2)", color: "#ef4444" }}>🗑</button>
                       </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Files Tab ─────────────────────────────────────────────────────────────
-function FilesTab({ project, files, onRefresh }) {
-  const [uploading, setUploading] = useState(false);
-  const [analyzing, setAnalyzing] = useState(null);
-  const [analysisResult, setAnalysisResult] = useState({});
-  const fileRef = useRef();
-
-  const uploadFile = async (file) => {
-    setUploading(true);
-    const category = file.name.toLowerCase().includes("חשמל") ? "חשמל" : file.name.toLowerCase().includes("אינסטל") ? "אינסטלציה" : file.name.toLowerCase().includes("קונ") ? "קונסטרוקציה" : "תוכנית";
-    await supabase.from("project_files").insert([{
-      project_id: project.id,
-      name: file.name,
-      type: file.type,
-      size: file.size > 1024 * 1024 ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : `${(file.size / 1024).toFixed(0)} KB`,
-      uploaded_by: "מנהל",
-      category,
-      url: "#",
-    }]);
-    onRefresh();
-    setUploading(false);
-  };
-
-  const analyzeFile = async (file, fileRecord) => {
-    setAnalyzing(fileRecord.id);
-    try {
-      const type = file.name.includes("חשבונית") ? "invoice" : "blueprint";
-      const result = await analyzeWithGemini(file, type);
-      await supabase.from("project_files").update({ ai_analysis: JSON.stringify(result) }).eq("id", fileRecord.id);
-      setAnalysisResult(prev => ({ ...prev, [fileRecord.id]: result }));
-      onRefresh();
-    } catch { }
-    setAnalyzing(null);
-  };
-
-  const deleteFile = async (id) => {
-    if (!window.confirm("למחוק קובץ זה?")) return;
-    await supabase.from("project_files").delete().eq("id", id);
-    onRefresh();
-  };
-
-  const CATEGORY_COLORS = { "תוכנית": "#C9A84C", "חשמל": "#5CC98A", "אינסטלציה": "#B8C4D4", "קונסטרוקציה": "#E0A84C" };
-
-  return (
-    <div style={{ display: "grid", gap: "1.2rem" }}>
-      <div style={card}>
-        <h3 style={{ color: "#E8E0D0", fontSize: "0.95rem", marginBottom: "1rem", fontWeight: 600 }}>📐 העלאת תוכניות מהנדס</h3>
-        <div onClick={() => fileRef.current?.click()} style={{ border: "2px dashed rgba(201,168,76,0.3)", borderRadius: "0.8rem", padding: "2.5rem", textAlign: "center", cursor: "pointer", transition: "all 0.2s" }}>
-          <div style={{ fontSize: "2.5rem", marginBottom: "0.5rem" }}>📁</div>
-          <div style={{ color: "#C9A84C", fontWeight: 600, marginBottom: "0.3rem" }}>גרור קבצים לכאן או לחץ לבחירה</div>
-          <div style={{ color: "#8B9DB5", fontSize: "0.78rem" }}>PDF, תמונות, DWG — תוכניות, חשמל, אינסטלציה</div>
-          {uploading && <div style={{ color: "#5CC98A", marginTop: "0.5rem" }}>⏳ מעלה...</div>}
-        </div>
-        <input ref={fileRef} type="file" accept=".pdf,image/*,.dwg" multiple style={{ display: "none" }} onChange={e => Array.from(e.target.files).forEach(uploadFile)} />
-      </div>
-
-      <div style={card}>
-        <h3 style={{ color: "#E8E0D0", fontSize: "0.95rem", marginBottom: "1rem", fontWeight: 600 }}>תוכניות מהנדס ({files.length})</h3>
-        {files.length === 0 ? (
-          <div style={{ textAlign: "center", color: "#8B9DB5", padding: "2rem" }}>אין קבצים עדיין</div>
-        ) : (
-          <div style={{ display: "grid", gap: "0.8rem" }}>
-            {files.map(f => {
-              const analysis = analysisResult[f.id] || (f.ai_analysis ? JSON.parse(f.ai_analysis) : null);
-              return (
-                <div key={f.id} style={{ background: "rgba(255,255,255,0.02)", borderRadius: "0.8rem", padding: "1rem" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.8rem" }}>
-                    <div style={{ fontSize: "1.8rem" }}>{f.type?.includes("pdf") ? "📄" : "🖼️"}</div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ color: "#E8E0D0", fontWeight: 600, fontSize: "0.88rem" }}>{f.name}</div>
-                      <div style={{ display: "flex", gap: "0.6rem", marginTop: "0.2rem" }}>
-                        <span style={{ color: CATEGORY_COLORS[f.category] || "#C9A84C", fontSize: "0.72rem", background: `${CATEGORY_COLORS[f.category] || "#C9A84C"}22`, borderRadius: "0.3rem", padding: "0.1rem 0.4rem" }}>{f.category}</span>
-                        <span style={{ color: "#8B9DB5", fontSize: "0.72rem" }}>{f.size}</span>
-                        <span style={{ color: "#8B9DB5", fontSize: "0.72rem" }}>{new Date(f.created_at).toLocaleDateString("he-IL")}</span>
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", gap: "0.4rem" }}>
-                      <label style={{ background: "rgba(201,168,76,0.1)", border: "1px solid rgba(201,168,76,0.2)", borderRadius: "0.5rem", color: "#C9A84C", padding: "0.3rem 0.6rem", cursor: "pointer", fontSize: "0.75rem" }}>
-                        🤖 {analyzing === f.id ? "מנתח..." : "נתח AI"}
-                        <input type="file" accept="image/*,.pdf" style={{ display: "none" }} onChange={e => analyzeFile(e.target.files[0], f)} />
-                      </label>
-                      <button onClick={() => deleteFile(f.id)} style={{ background: "rgba(224,92,92,0.1)", border: "1px solid rgba(224,92,92,0.2)", borderRadius: "0.5rem", color: "#E05C5C", padding: "0.3rem 0.6rem", cursor: "pointer", fontSize: "0.75rem" }}>🗑️</button>
-                    </div>
-                  </div>
-                  {analysis && (
-                    <div style={{ marginTop: "0.8rem", background: "rgba(201,168,76,0.05)", border: "1px solid rgba(201,168,76,0.1)", borderRadius: "0.6rem", padding: "0.8rem" }}>
-                      <div style={{ color: "#C9A84C", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.4rem" }}>🤖 ניתוח AI</div>
-                      {analysis.building_type && <div style={{ color: "#B8C4D4", fontSize: "0.78rem" }}>סוג: {analysis.building_type} | שטח: {analysis.area_sqm} מ״ר | קומות: {analysis.floors}</div>}
-                      {analysis.summary && <div style={{ color: "#B8C4D4", fontSize: "0.78rem" }}>{analysis.summary}</div>}
-                      {analysis.total_estimated_cost > 0 && <div style={{ color: "#5CC98A", fontSize: "0.82rem", fontWeight: 600, marginTop: "0.3rem" }}>עלות מוערכת: {fmt(analysis.total_estimated_cost)}</div>}
-                      {analysis.materials?.length > 0 && (
-                        <div style={{ marginTop: "0.4rem" }}>
-                          {analysis.materials.slice(0, 3).map((m, i) => <div key={i} style={{ color: "#8B9DB5", fontSize: "0.73rem" }}>• {m.name}: {m.quantity} {m.unit}</div>)}
-                        </div>
-                      )}
-                      <div style={{ color: analysis.confidence >= 90 ? "#5CC98A" : "#E0A84C", fontSize: "0.7rem", marginTop: "0.3rem" }}>דיוק: {analysis.confidence}%</div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Quantities Tab ────────────────────────────────────────────────────────
-function QuantitiesTab({ project, quantities, onRefresh }) {
-  const [newItem, setNewItem] = useState({ name: "", unit: "", contract: "", actual: "", price: "" });
-  const [saving, setSaving] = useState(false);
-
-  const addItem = async () => {
-    if (!newItem.name) return;
-    setSaving(true);
-    await supabase.from("quantities").insert([{ project_id: project.id, ...newItem, contract: Number(newItem.contract), actual: Number(newItem.actual), price: Number(newItem.price) }]);
-    setNewItem({ name: "", unit: "", contract: "", actual: "", price: "" });
-    onRefresh();
-    setSaving(false);
-  };
-
-  const updateActual = async (id, actual) => {
-    await supabase.from("quantities").update({ actual: Number(actual) }).eq("id", id);
-    onRefresh();
-  };
-
-  const deleteItem = async (id) => {
-    await supabase.from("quantities").delete().eq("id", id);
-    onRefresh();
-  };
-
-  const total = quantities.reduce((s, q) => s + (q.actual * q.price), 0);
-  const totalContract = quantities.reduce((s, q) => s + (q.contract * q.price), 0);
-
-  return (
-    <div style={{ display: "grid", gap: "1.2rem" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "1rem" }}>
-        {[{ label: "סה״כ חוזה", value: fmt(totalContract), color: "#C9A84C" }, { label: "סה״כ ביצוע", value: fmt(total), color: "#5CC98A" }, { label: "יתרה", value: fmt(totalContract - total), color: "#B8C4D4" }].map(s => (
-          <div key={s.label} style={{ ...card, textAlign: "center", padding: "1rem" }}>
-            <div style={{ color: "#8B9DB5", fontSize: "0.72rem", marginBottom: "0.2rem" }}>{s.label}</div>
-            <div style={{ color: s.color, fontSize: "1.3rem", fontWeight: 700, fontFamily: "'Playfair Display', serif" }}>{s.value}</div>
-          </div>
-        ))}
-      </div>
-      <div style={card}>
-        <h3 style={{ color: "#E8E0D0", fontSize: "0.95rem", marginBottom: "1rem", fontWeight: 600 }}>כתב כמויות</h3>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
-            <thead>
-              <tr style={{ borderBottom: "1px solid rgba(201,168,76,0.2)" }}>
-                {["סעיף", "יחידה", "כמות חוזה", "כמות ביצוע", "מחיר יחידה", "סה״כ", "%", ""].map(h => <th key={h} style={{ color: "#C9A84C", padding: "0.5rem", textAlign: "right", fontWeight: 600 }}>{h}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {quantities.map(q => {
-                const pct = q.contract > 0 ? Math.round(q.actual / q.contract * 100) : 0;
-                const color = pct > 100 ? "#E05C5C" : pct >= 90 ? "#E0A84C" : "#5CC98A";
-                return (
-                  <tr key={q.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                    <td style={{ padding: "0.5rem", color: "#E8E0D0", fontWeight: 500 }}>{q.name}</td>
-                    <td style={{ padding: "0.5rem", color: "#8B9DB5" }}>{q.unit}</td>
-                    <td style={{ padding: "0.5rem", color: "#B8C4D4" }}>{q.contract}</td>
-                    <td style={{ padding: "0.5rem" }}>
-                      <input type="number" defaultValue={q.actual} onBlur={e => updateActual(q.id, e.target.value)} style={{ ...inputStyle, width: "70px", padding: "0.3rem 0.4rem" }} />
-                    </td>
-                    <td style={{ padding: "0.5rem", color: "#C9A84C" }}>₪{q.price}</td>
-                    <td style={{ padding: "0.5rem", color: "#5CC98A", fontWeight: 600 }}>{fmt(q.actual * q.price)}</td>
-                    <td style={{ padding: "0.5rem", minWidth: "80px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
-                        <div style={{ flex: 1, background: "rgba(255,255,255,0.08)", borderRadius: "1rem", height: "5px" }}><div style={{ width: `${Math.min(pct, 100)}%`, height: "100%", background: color, borderRadius: "1rem" }} /></div>
-                        <span style={{ color, fontSize: "0.7rem" }}>{pct}%</span>
-                      </div>
-                    </td>
-                    <td style={{ padding: "0.5rem" }}>
-                      <button onClick={() => deleteItem(q.id)} style={{ background: "none", border: "none", color: "#E05C5C", cursor: "pointer", fontSize: "0.8rem" }}>🗑️</button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ marginTop: "1rem", display: "flex", gap: "0.6rem", flexWrap: "wrap", alignItems: "flex-end" }}>
-          {[{ k: "name", p: "שם סעיף", w: "150px" }, { k: "unit", p: "יחידה", w: "70px" }, { k: "contract", p: "חוזה", t: "number", w: "80px" }, { k: "actual", p: "ביצוע", t: "number", w: "80px" }, { k: "price", p: "מחיר", t: "number", w: "90px" }].map(f => (
-            <input key={f.k} type={f.t || "text"} placeholder={f.p} value={newItem[f.k]} onChange={e => setNewItem(n => ({ ...n, [f.k]: e.target.value }))} style={{ ...inputStyle, width: f.w }} />
-          ))}
-          <button onClick={addItem} disabled={saving} style={btnGold}>{saving ? "..." : "+ הוסף"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Timeline Tab ──────────────────────────────────────────────────────────
-function TimelineTab({ project }) {
-  const milestones = [
-    { name: "תכנון ואישורים", date: "01/2026", status: "הושלם", color: "#5CC98A" },
-    { name: "יסודות", date: "02/2026", status: "הושלם", color: "#5CC98A" },
-    { name: "שלד קומה א׳", date: "03/2026", status: "בביצוע", color: "#C9A84C" },
-    { name: "שלד קומה ב׳", date: "04/2026", status: "מתוכנן", color: "#8B9DB5" },
-    { name: "גמר פנים", date: "05/2026", status: "מתוכנן", color: "#8B9DB5" },
-    { name: "מסירה", date: "06/2026", status: "מתוכנן", color: "#8B9DB5" },
-  ];
-  return (
-    <div style={card}>
-      <h3 style={{ color: "#E8E0D0", fontSize: "0.95rem", marginBottom: "1.5rem", fontWeight: 600 }}>לוח זמנים — אבני דרך</h3>
-      <div style={{ position: "relative", paddingRight: "2rem" }}>
-        <div style={{ position: "absolute", right: "0.65rem", top: 0, bottom: 0, width: "2px", background: "rgba(201,168,76,0.2)" }} />
-        {milestones.map((m, i) => (
-          <div key={i} style={{ position: "relative", marginBottom: "1.5rem", paddingRight: "1.5rem" }}>
-            <div style={{ position: "absolute", right: "-1.35rem", top: "0.2rem", width: "14px", height: "14px", borderRadius: "50%", background: m.color, border: "2px solid #0D1B2E", boxShadow: `0 0 8px ${m.color}` }} />
-            <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: "0.8rem", padding: "0.8rem 1rem" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ color: "#E8E0D0", fontWeight: 600, fontSize: "0.88rem" }}>{m.name}</span>
-                <span style={{ color: "#8B9DB5", fontSize: "0.75rem" }}>{m.date}</span>
-              </div>
-              <span style={{ color: m.color, fontSize: "0.72rem", marginTop: "0.2rem", display: "block" }}>{m.status}</span>
+            <div style={{ marginTop: "1rem", textAlign: "left", color: "#E8A84C", fontWeight: 700 }}>
+              סה"כ: ₪{invoices.reduce((s, i) => s + Number(i.total_amount || 0), 0).toLocaleString()}
             </div>
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Files Tab ───────────────────────────────────────────────────────────────
+function FilesTab({ projectId }) {
+  const [files, setFiles] = useState([]);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [aiResult, setAiResult] = useState(null);
+  const [error, setError] = useState("");
+  const fileRef = useRef();
+
+  useEffect(() => { loadFiles(); }, [projectId]);
+
+  const loadFiles = async () => {
+    const { data } = await supabase.from("project_files").select("*")
+      .eq("project_id", projectId).order("created_at", { ascending: false });
+    if (data) setFiles(data);
+  };
+
+  const onFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setError("");
+    setAiResult(null);
+    setAnalyzing(true);
+
+    try {
+      const key = import.meta.env.VITE_GEMINI_KEY;
+      if (!key) throw new Error("מפתח Gemini חסר");
+
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const base64 = ev.target.result.split(",")[1];
+        const mimeType = file.type || "image/jpeg";
+
+        const prompt = `אתה מהנדס בניין מנוסה. נתח את התוכנית ההנדסית/הגרמושקה הזו.
+החזר JSON בלבד (ללא markdown):
+{
+  "doc_type": "תוכנית ביצוע" | "גרמושקה" | "תוכנית קומה" | "חתך" | "פרט" | "אחר",
+  "rooms": [{"name": "שם חדר", "width_m": 0, "length_m": 0, "area_sqm": 0}],
+  "total_area": 0,
+  "floors": 1,
+  "materials": [{"name": "חומר", "quantity": 0, "unit": "מ\"ק|מ\"ר|יח'"}],
+  "notes": "הערות מהנדסיות",
+  "confidence": 0.9
+}`;
+
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${key}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ inline_data: { mime_type: mimeType, data: base64 } }, { text: prompt }] }],
+              generationConfig: { temperature: 0.1 }
+            })
+          }
+        );
+
+        const data = await response.json();
+        if (data.error) throw new Error(data.error.message);
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+        setAiResult({ ...parsed, fileName: file.name });
+
+        // Save to DB
+        await supabase.from("project_files").insert({
+          project_id: projectId,
+          file_name: file.name,
+          file_type: parsed.doc_type,
+          ai_analysis: JSON.stringify(parsed),
+        });
+        loadFiles();
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      setError(err.message);
+    }
+    setAnalyzing(false);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+      <div style={card}>
+        <h3 style={{ color: "#E8A84C", marginBottom: "1rem" }}>📐 העלאת תוכנית הנדסית לניתוח AI</h3>
+        <div onClick={() => fileRef.current?.click()} style={{
+          border: "2px dashed rgba(59,130,246,0.4)", borderRadius: "1rem",
+          padding: "2rem", textAlign: "center", cursor: "pointer",
+          background: "rgba(59,130,246,0.04)", marginBottom: "1rem"
+        }}>
+          <div style={{ fontSize: "2.5rem" }}>🗺️</div>
+          <div style={{ color: "#60a5fa", fontWeight: 600 }}>העלה גרמושקה / תוכנית הנדסית</div>
+          <div style={{ color: "#8B9DBS", fontSize: "0.85rem" }}>AI יחלץ חדרים, שטחים וחומרים</div>
+        </div>
+        <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={onFile} style={{ display: "none" }} />
+
+        {analyzing && <div style={{ textAlign: "center", color: "#60a5fa", padding: "1rem" }}>⟳ מנתח תוכנית...</div>}
+        {error && <div style={{ color: "#ef4444", background: "rgba(239,68,68,0.1)", borderRadius: "0.75rem", padding: "0.75rem" }}>❌ {error}</div>}
+
+        {aiResult && (
+          <div style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.3)", borderRadius: "1rem", padding: "1.25rem" }}>
+            <div style={{ color: "#60a5fa", fontWeight: 700, marginBottom: "1rem" }}>✓ ניתוח תוכנית: {aiResult.fileName}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.75rem", marginBottom: "1rem" }}>
+              <div style={kpiMini}><div style={{ color: "#8B9DBS", fontSize: "0.75rem" }}>סוג מסמך</div><div style={{ color: "#E8E0D5" }}>{aiResult.doc_type}</div></div>
+              <div style={kpiMini}><div style={{ color: "#8B9DBS", fontSize: "0.75rem" }}>שטח כולל</div><div style={{ color: "#E8E0D5" }}>{aiResult.total_area} מ"ר</div></div>
+              <div style={kpiMini}><div style={{ color: "#8B9DBS", fontSize: "0.75rem" }}>קומות</div><div style={{ color: "#E8E0D5" }}>{aiResult.floors}</div></div>
+            </div>
+            {aiResult.rooms?.length > 0 && (
+              <div style={{ marginBottom: "1rem" }}>
+                <div style={{ color: "#E8A84C", fontWeight: 600, marginBottom: "0.5rem" }}>חדרים:</div>
+                {aiResult.rooms.map((r, i) => (
+                  <div key={i} style={{ background: "rgba(255,255,255,0.04)", borderRadius: "0.5rem", padding: "0.5rem 0.75rem", marginBottom: "0.3rem", display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#E8E0D5" }}>{r.name}</span>
+                    <span style={{ color: "#8B9DBS" }}>{r.width_m}×{r.length_m}מ = {r.area_sqm}מ"ר</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {aiResult.materials?.length > 0 && (
+              <div>
+                <div style={{ color: "#E8A84C", fontWeight: 600, marginBottom: "0.5rem" }}>חומרים משוערים:</div>
+                {aiResult.materials.map((m, i) => (
+                  <div key={i} style={{ background: "rgba(255,255,255,0.04)", borderRadius: "0.5rem", padding: "0.5rem 0.75rem", marginBottom: "0.3rem", display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#E8E0D5" }}>{m.name}</span>
+                    <span style={{ color: "#E8A84C" }}>{m.quantity} {m.unit}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={card}>
+        <h3 style={{ color: "#E8A84C", marginBottom: "1rem" }}>📁 קבצים שנסרקו ({files.length})</h3>
+        {files.length === 0 ? (
+          <div style={{ textAlign: "center", color: "#8B9DBS", padding: "1.5rem" }}>אין קבצים עדיין</div>
+        ) : files.map(f => (
+          <div key={f.id} style={{ background: "rgba(255,255,255,0.04)", borderRadius: "0.75rem", padding: "0.75rem 1rem", marginBottom: "0.5rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ color: "#E8E0D5", fontWeight: 600 }}>{f.file_name}</div>
+              <div style={{ color: "#8B9DBS", fontSize: "0.8rem" }}>{f.file_type} • {new Date(f.created_at).toLocaleDateString("he-IL")}</div>
+            </div>
+            <button onClick={() => supabase.from("project_files").delete().eq("id", f.id).then(loadFiles)}
+              style={{ ...btnMini, background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>🗑</button>
+          </div>
         ))}
       </div>
     </div>
   );
 }
 
-// ── Main Project Detail ───────────────────────────────────────────────────
-export default function ProjectDetail({ project, onBack, onUpdate }) {
-  const [activeTab, setActiveTab] = useState("overview");
-  const [invoices, setInvoices] = useState([]);
-  const [files, setFiles] = useState([]);
-  const [quantities, setQuantities] = useState([]);
-  const [loading, setLoading] = useState(true);
+// ─── Quantities (בינראית) Tab ────────────────────────────────────────────────
+function QuantitiesTab({ projectId }) {
+  const [rows, setRows] = useState([]);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ section: "שלד", item: "", unit: "מ\"ק", contract_qty: 0, actual_qty: 0, unit_price: 0 });
 
-  const fetchAll = async () => {
-    setLoading(true);
-    const [inv, fil, qty] = await Promise.all([
-      supabase.from("invoices").select("*").eq("project_id", project.id).order("created_at", { ascending: false }),
-      supabase.from("project_files").select("*").eq("project_id", project.id).order("created_at", { ascending: false }),
-      supabase.from("quantities").select("*").eq("project_id", project.id).order("created_at", { ascending: true }),
-    ]);
-    setInvoices(inv.data || []);
-    setFiles(fil.data || []);
-    setQuantities(qty.data || []);
-    setLoading(false);
+  const SECTIONS = ["עפר ופיתוח", "שלד", "בנייה", "אינסטלציה", "חשמל", "גמר", "מסגרות ואלומיניום", "שונות"];
+
+  useEffect(() => { loadRows(); }, [projectId]);
+
+  const loadRows = async () => {
+    const { data } = await supabase.from("quantities").select("*")
+      .eq("project_id", projectId).order("created_at");
+    if (data) setRows(data);
   };
 
-  useEffect(() => { fetchAll(); }, [project.id]);
+  const addRow = async () => {
+    const { error } = await supabase.from("quantities").insert({
+      project_id: projectId,
+      ...form,
+      contract_total: form.contract_qty * form.unit_price,
+      actual_total: form.actual_qty * form.unit_price,
+    });
+    if (!error) { setAdding(false); setForm({ section: "שלד", item: "", unit: "מ\"ק", contract_qty: 0, actual_qty: 0, unit_price: 0 }); loadRows(); }
+  };
 
-  const pct = project.budget > 0 ? Math.round(project.spent / project.budget * 100) : 0;
+  const grouped = SECTIONS.reduce((acc, s) => {
+    acc[s] = rows.filter(r => r.section === s);
+    return acc;
+  }, {});
+
+  const totalContract = rows.reduce((s, r) => s + (r.contract_total || 0), 0);
+  const totalActual = rows.reduce((s, r) => s + (r.actual_total || 0), 0);
 
   return (
-    <div dir="rtl" style={{ fontFamily: "'Assistant', sans-serif" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Assistant:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap');`}</style>
+    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1rem" }}>
+        <div style={card}><div style={{ color: "#8B9DBS", fontSize: "0.8rem" }}>סה"כ חוזה</div><div style={{ color: "#3b82f6", fontSize: "1.4rem", fontWeight: 700 }}>₪{totalContract.toLocaleString()}</div></div>
+        <div style={card}><div style={{ color: "#8B9DBS", fontSize: "0.8rem" }}>סה"כ ביצוע</div><div style={{ color: "#E8A84C", fontSize: "1.4rem", fontWeight: 700 }}>₪{totalActual.toLocaleString()}</div></div>
+        <div style={card}><div style={{ color: "#8B9DBS", fontSize: "0.8rem" }}>הפרש</div><div style={{ color: totalActual > totalContract ? "#ef4444" : "#22c55e", fontSize: "1.4rem", fontWeight: 700 }}>₪{Math.abs(totalContract - totalActual).toLocaleString()}</div></div>
+      </div>
+
+      <div style={{ ...card, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h3 style={{ color: "#E8A84C" }}>📐 כתב כמויות</h3>
+        <button onClick={() => setAdding(true)} style={btnPrimary}>+ הוסף סעיף</button>
+      </div>
+
+      {adding && (
+        <div style={card}>
+          <h4 style={{ color: "#E8A84C", marginBottom: "1rem" }}>➕ סעיף חדש</h4>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.75rem", marginBottom: "1rem" }}>
+            <div>
+              <label style={lbl}>פרק</label>
+              <select value={form.section} onChange={e => setForm(f => ({ ...f, section: e.target.value }))} style={inp2}>
+                {SECTIONS.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            {[["תיאור עבודה", "item", "text"], ["יחידה", "unit", "text"], ["כמות חוזה", "contract_qty", "number"], ["כמות ביצוע", "actual_qty", "number"], ["מחיר יחידה", "unit_price", "number"]].map(([l, k, t]) => (
+              <div key={k}>
+                <label style={lbl}>{l}</label>
+                <input type={t} value={form[k]} onChange={e => setForm(f => ({ ...f, [k]: t === "number" ? +e.target.value : e.target.value }))} style={inp2} />
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem" }}>
+            <button onClick={addRow} style={btnPrimary}>💾 שמור</button>
+            <button onClick={() => setAdding(false)} style={btnSecondary}>ביטול</button>
+          </div>
+        </div>
+      )}
+
+      {SECTIONS.map(sec => {
+        const secRows = grouped[sec] || [];
+        if (secRows.length === 0) return null;
+        return (
+          <div key={sec} style={card}>
+            <h4 style={{ color: "#E8A84C", marginBottom: "0.75rem" }}>{sec}</h4>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                  {["תיאור", "יחידה", "כמות חוזה", "כמות ביצוע", "מחיר יחידה", "סה\"כ חוזה", "סה\"כ ביצוע", ""].map(h => (
+                    <th key={h} style={{ padding: "0.4rem 0.6rem", color: "#8B9DBS", fontSize: "0.75rem", fontWeight: 600, textAlign: "right" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {secRows.map(r => (
+                  <tr key={r.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                    <td style={td}>{r.item}</td>
+                    <td style={td}>{r.unit}</td>
+                    <td style={td}>{r.contract_qty}</td>
+                    <td style={{ ...td, color: r.actual_qty > r.contract_qty ? "#ef4444" : "#E8E0D5" }}>{r.actual_qty}</td>
+                    <td style={td}>₪{Number(r.unit_price).toLocaleString()}</td>
+                    <td style={td}>₪{Number(r.contract_total || 0).toLocaleString()}</td>
+                    <td style={{ ...td, color: "#E8A84C" }}>₪{Number(r.actual_total || 0).toLocaleString()}</td>
+                    <td style={td}>
+                      <button onClick={async () => { await supabase.from("quantities").delete().eq("id", r.id); loadRows(); }}
+                        style={{ ...btnMini, background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>🗑</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Timeline Tab ────────────────────────────────────────────────────────────
+function TimelineTab({ projectId }) {
+  const [milestones, setMilestones] = useState([]);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ title: "", due_date: "", status: "ממתין", notes: "" });
+
+  useEffect(() => { loadMS(); }, [projectId]);
+
+  const loadMS = async () => {
+    const { data } = await supabase.from("milestones").select("*")
+      .eq("project_id", projectId).order("due_date");
+    if (data) setMilestones(data);
+  };
+
+  const addMS = async () => {
+    await supabase.from("milestones").insert({ project_id: projectId, ...form });
+    setAdding(false);
+    setForm({ title: "", due_date: "", status: "ממתין", notes: "" });
+    loadMS();
+  };
+
+  const updateStatus = async (id, status) => {
+    await supabase.from("milestones").update({ status }).eq("id", id);
+    loadMS();
+  };
+
+  const statusColor = (s) => ({ "הושלם": "#22c55e", "בביצוע": "#E8A84C", "ממתין": "#8B9DBS", "עיכוב": "#ef4444" })[s] || "#8B9DBS";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+      <div style={{ ...card, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h3 style={{ color: "#E8A84C" }}>📅 אבני דרך</h3>
+        <button onClick={() => setAdding(true)} style={btnPrimary}>+ הוסף אבן דרך</button>
+      </div>
+
+      {adding && (
+        <div style={card}>
+          <h4 style={{ color: "#E8A84C", marginBottom: "1rem" }}>➕ אבן דרך חדשה</h4>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "1rem" }}>
+            {[["כותרת", "title", "text"], ["תאריך יעד", "due_date", "date"]].map(([l, k, t]) => (
+              <div key={k}>
+                <label style={lbl}>{l}</label>
+                <input type={t} value={form[k]} onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))} style={inp2} />
+              </div>
+            ))}
+            <div>
+              <label style={lbl}>סטטוס</label>
+              <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} style={inp2}>
+                {["ממתין", "בביצוע", "הושלם", "עיכוב"].map(s => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={lbl}>הערות</label>
+              <input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} style={inp2} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem" }}>
+            <button onClick={addMS} style={btnPrimary}>💾 שמור</button>
+            <button onClick={() => setAdding(false)} style={btnSecondary}>ביטול</button>
+          </div>
+        </div>
+      )}
+
+      {milestones.length === 0 ? (
+        <div style={{ ...card, textAlign: "center", color: "#8B9DBS", padding: "2rem" }}>אין אבני דרך עדיין</div>
+      ) : milestones.map((m, i) => (
+        <div key={m.id} style={{ ...card, borderRight: `4px solid ${statusColor(m.status)}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ color: "#E8E0D5", fontWeight: 600 }}>{m.title}</div>
+              <div style={{ color: "#8B9DBS", fontSize: "0.8rem" }}>{m.due_date ? new Date(m.due_date).toLocaleDateString("he-IL") : "—"} {m.notes && `• ${m.notes}`}</div>
+            </div>
+            <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+              {["ממתין", "בביצוע", "הושלם", "עיכוב"].map(s => (
+                <button key={s} onClick={() => updateStatus(m.id, s)} style={{
+                  ...btnMini,
+                  background: m.status === s ? `${statusColor(s)}33` : "rgba(255,255,255,0.06)",
+                  color: m.status === s ? statusColor(s) : "#8B9DBS",
+                  border: m.status === s ? `1px solid ${statusColor(s)}` : "1px solid transparent"
+                }}>{s}</button>
+              ))}
+              <button onClick={async () => { await supabase.from("milestones").delete().eq("id", m.id); loadMS(); }}
+                style={{ ...btnMini, background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>🗑</button>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Messages (WhatsApp) Tab ─────────────────────────────────────────────────
+function MessagesTab({ project }) {
+  const [phone, setPhone] = useState(project?.client_phone || "");
+  const [msg, setMsg] = useState("");
+  const [template, setTemplate] = useState("");
+
+  const TEMPLATES = [
+    { label: "עדכון התקדמות", text: `שלום,\nרצינו לעדכן אותך על התקדמות פרויקט "${project?.name}".\nסיימנו ${project?.progress || 0}% מהעבודה.\nשלב נוכחי: ${project?.phase || ""}.\nלשאלות נשמח לעמוד לרשותך.` },
+    { label: "חריגת תקציב", text: `שלום,\nאנו רוצים להודיעך כי פרויקט "${project?.name}" מתקרב לגבול התקציב המאושר.\nאנא צור קשר בהקדם לתיאום המשך.` },
+    { label: "סיום פרויקט", text: `שלום,\nאנו שמחים להודיע כי פרויקט "${project?.name}" הושלם!\nאנא תאם איתנו מועד לבדיקת עבודה.` },
+    { label: "תזכורת תשלום", text: `שלום,\nזוהי תזכורת לגבי תשלום עבור פרויקט "${project?.name}".\nאנא בדוק את הפרטים הרלוונטיים.` },
+  ];
+
+  const sendWhatsApp = () => {
+    const clean = phone.replace(/\D/g, "").replace(/^0/, "972");
+    const encoded = encodeURIComponent(msg || template);
+    window.open(`https://wa.me/${clean}?text=${encoded}`, "_blank");
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+      <div style={card}>
+        <h3 style={{ color: "#E8A84C", marginBottom: "1rem" }}>💬 שליחת הודעת WhatsApp ללקוח</h3>
+        <div style={{ marginBottom: "1rem" }}>
+          <label style={lbl}>מספר טלפון לקוח</label>
+          <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="05X-XXXXXXX" style={inp2} />
+        </div>
+        <div style={{ marginBottom: "1rem" }}>
+          <label style={lbl}>תבנית הודעה מוכנה</label>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+            {TEMPLATES.map(t => (
+              <button key={t.label} onClick={() => setTemplate(t.text)} style={{
+                ...btnSecondary,
+                border: template === t.text ? "1px solid #E8A84C" : "1px solid rgba(255,255,255,0.1)",
+                color: template === t.text ? "#E8A84C" : "#E8E0D5",
+              }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ marginBottom: "1rem" }}>
+          <label style={lbl}>תוכן ההודעה</label>
+          <textarea
+            value={msg || template}
+            onChange={e => setMsg(e.target.value)}
+            rows={6}
+            style={{ ...inp2, resize: "vertical", lineHeight: 1.6 }}
+          />
+        </div>
+        <button
+          onClick={sendWhatsApp}
+          disabled={!phone || (!msg && !template)}
+          style={{ ...btnPrimary, background: "linear-gradient(135deg, #25D366, #128C7E)", opacity: (!phone || (!msg && !template)) ? 0.5 : 1 }}
+        >
+          📲 שלח ב-WhatsApp
+        </button>
+        <div style={{ color: "#8B9DBS", fontSize: "0.8rem", marginTop: "0.75rem" }}>
+          יפתח WhatsApp Web עם ההודעה המוכנה לשליחה
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Shared Styles ───────────────────────────────────────────────────────────
+const card = { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "1rem", padding: "1.25rem" };
+const kpiMini = { background: "rgba(255,255,255,0.04)", borderRadius: "0.75rem", padding: "0.75rem" };
+const td = { padding: "0.5rem 0.6rem", color: "#E8E0D5", fontSize: "0.85rem" };
+const lbl = { fontSize: "0.82rem", color: "#E8A84C", fontWeight: 600, display: "block", marginBottom: "0.35rem" };
+const inp2 = { width: "100%", background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "0.75rem", padding: "0.6rem 0.9rem", color: "#E8E0D5", fontSize: "0.9rem", fontFamily: "'Assistant',sans-serif", outline: "none" };
+const btnPrimary = { background: "linear-gradient(135deg,#E8A84C,#c8882c)", color: "#fff", border: "none", borderRadius: "0.75rem", padding: "0.6rem 1.5rem", fontWeight: 600, cursor: "pointer", fontFamily: "'Assistant',sans-serif" };
+const btnSecondary = { background: "rgba(255,255,255,0.07)", color: "#E8E0D5", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "0.75rem", padding: "0.6rem 1.2rem", fontWeight: 600, cursor: "pointer", fontFamily: "'Assistant',sans-serif" };
+const btnMini = { padding: "0.3rem 0.6rem", borderRadius: "0.5rem", border: "none", cursor: "pointer", fontSize: "0.8rem", fontFamily: "'Assistant',sans-serif" };
+
+// ─── Main Export ─────────────────────────────────────────────────────────────
+export default function ProjectDetail({ project, onBack, onUpdate }) {
+  const [activeTab, setActiveTab] = useState("overview");
+  const [proj, setProj] = useState(project);
+
+  const handleUpdate = (updated) => {
+    setProj(updated);
+    onUpdate?.(updated);
+  };
+
+  return (
+    <div dir="rtl" style={{ fontFamily: "'Assistant', sans-serif", color: "#E8E0D5" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Assistant:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap');input,select,textarea{color-scheme:dark}`}</style>
 
       {/* Header */}
       <div style={{ marginBottom: "1.5rem" }}>
-        <button onClick={onBack} style={{ ...btnGhost, marginBottom: "1rem", fontSize: "0.8rem" }}>← חזרה לפרויקטים</button>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "1rem" }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: "#E8A84C", cursor: "pointer", fontSize: "0.9rem", marginBottom: "0.75rem", fontFamily: "'Assistant',sans-serif" }}>
+          ← חזור לפרויקטים
+        </button>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
           <div>
-            <h1 style={{ fontFamily: "'Playfair Display', serif", fontSize: "1.8rem", color: "#E8E0D0", marginBottom: "0.3rem" }}>{project.name}</h1>
-            <div style={{ display: "flex", gap: "0.8rem", alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ color: "#8B9DB5", fontSize: "0.82rem" }}>👷 {project.client}</span>
-              <span style={{ color: "#8B9DB5", fontSize: "0.82rem" }}>📍 {project.phase}</span>
-              <span style={{ background: `${STATUS_COLORS[project.status]}22`, color: STATUS_COLORS[project.status], borderRadius: "0.4rem", padding: "0.15rem 0.6rem", fontSize: "0.75rem", fontWeight: 600 }}>{project.status}</span>
+            <h1 style={{ fontFamily: "'Playfair Display',serif", fontSize: "1.8rem", color: "#E8E0D5", marginBottom: "0.3rem" }}>{proj.name}</h1>
+            <div style={{ color: "#8B9DBS", fontSize: "0.9rem" }}>
+              {proj.client} · {proj.status} · {proj.phase}
             </div>
           </div>
-          <div style={{ display: "flex", gap: "0.6rem" }}>
-            <div style={{ ...card, padding: "0.6rem 1rem", textAlign: "center" }}>
-              <div style={{ color: "#8B9DB5", fontSize: "0.65rem" }}>ביצוע</div>
-              <div style={{ color: pct > 100 ? "#E05C5C" : "#C9A84C", fontWeight: 700, fontSize: "1.1rem" }}>{pct}%</div>
-            </div>
-            <div style={{ ...card, padding: "0.6rem 1rem", textAlign: "center" }}>
-              <div style={{ color: "#8B9DB5", fontSize: "0.65rem" }}>ימים שנותרו</div>
-              <div style={{ color: project.days_left < 30 ? "#E05C5C" : "#5CC98A", fontWeight: 700, fontSize: "1.1rem" }}>{project.days_left}</div>
-            </div>
-          </div>
+          <button onClick={() => window.print()} style={btnSecondary}>🖨️ הדפס</button>
         </div>
       </div>
 
       {/* Tabs */}
-      <div style={{ display: "flex", gap: "0.3rem", marginBottom: "1.5rem", borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: "0" }}>
+      <div style={{ display: "flex", gap: "0.25rem", marginBottom: "1.5rem", overflowX: "auto", borderBottom: "1px solid rgba(255,255,255,0.1)", paddingBottom: "0" }}>
         {TABS.map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{ background: "none", border: "none", borderBottom: activeTab === t.id ? "2px solid #C9A84C" : "2px solid transparent", color: activeTab === t.id ? "#C9A84C" : "#8B9DB5", padding: "0.6rem 1rem", cursor: "pointer", fontSize: "0.82rem", fontFamily: "'Assistant', sans-serif", fontWeight: activeTab === t.id ? 600 : 400, display: "flex", alignItems: "center", gap: "0.4rem" }}>
-            <span>{t.icon}</span><span>{t.label}</span>
-            {t.id === "invoices" && invoices.filter(i => i.status === "ממתין לאישור").length > 0 && (
-              <span style={{ background: "#E0A84C", color: "#0D1B2E", borderRadius: "1rem", padding: "0 0.4rem", fontSize: "0.65rem", fontWeight: 700 }}>{invoices.filter(i => i.status === "ממתין לאישור").length}</span>
-            )}
+          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
+            background: "none", border: "none", borderBottom: activeTab === t.id ? "2px solid #E8A84C" : "2px solid transparent",
+            color: activeTab === t.id ? "#E8A84C" : "#8B9DBS",
+            padding: "0.6rem 1rem", fontSize: "0.9rem", fontWeight: 600, cursor: "pointer",
+            whiteSpace: "nowrap", fontFamily: "'Assistant',sans-serif",
+          }}>
+            {t.icon} {t.label}
           </button>
         ))}
       </div>
 
-      {/* Tab Content */}
-      {loading ? (
-        <div style={{ textAlign: "center", color: "#8B9DB5", padding: "3rem" }}>טוען נתוני פרויקט...</div>
-      ) : (
-        <>
-          {activeTab === "overview" && <OverviewTab project={project} invoices={invoices} files={files} quantities={quantities} />}
-          {activeTab === "invoices" && <InvoicesTab project={project} invoices={invoices} onRefresh={fetchAll} />}
-          {activeTab === "files" && <FilesTab project={project} files={files} onRefresh={fetchAll} />}
-          {activeTab === "quantities" && <QuantitiesTab project={project} quantities={quantities} onRefresh={fetchAll} />}
-          {activeTab === "timeline" && <TimelineTab project={project} />}
-        </>
-      )}
+      {/* Content */}
+      {activeTab === "overview" && <OverviewTab project={proj} onUpdate={handleUpdate} />}
+      {activeTab === "invoices" && <InvoicesTab projectId={proj.id} />}
+      {activeTab === "files" && <FilesTab projectId={proj.id} />}
+      {activeTab === "quantities" && <QuantitiesTab projectId={proj.id} />}
+      {activeTab === "timeline" && <TimelineTab projectId={proj.id} />}
+      {activeTab === "messages" && <MessagesTab project={proj} />}
     </div>
   );
 }
